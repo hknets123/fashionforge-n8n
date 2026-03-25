@@ -1,0 +1,190 @@
+{
+  "name": "FashionForge AI v2",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "fashionforge",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "webhook-main",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 340],
+      "webhookId": "fashionforge-main"
+    },
+    {
+      "parameters": {
+        "httpMethod": "OPTIONS",
+        "path": "fashionforge",
+        "responseMode": "responseNode"
+      },
+      "id": "webhook-cors",
+      "name": "CORS Preflight",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 540],
+      "webhookId": "fashionforge-cors"
+    },
+    {
+      "parameters": {
+        "respondWith": "noData",
+        "options": {
+          "responseCode": 204,
+          "responseHeaders": {
+            "entries": [
+              { "name": "Access-Control-Allow-Origin", "value": "*" },
+              { "name": "Access-Control-Allow-Methods", "value": "POST, OPTIONS" },
+              { "name": "Access-Control-Allow-Headers", "value": "Content-Type, Accept" },
+              { "name": "Access-Control-Max-Age", "value": "86400" }
+            ]
+          }
+        }
+      },
+      "id": "cors-respond",
+      "name": "CORS Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [420, 540]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// STEP 1: Validate & Prepare Input Image\n// ============================================\nconst body = $input.first().json.body || $input.first().json;\n\nif (!body.image) {\n  throw new Error('No image provided. Send { \"image\": \"base64_or_data_uri\" }');\n}\n\n// Clean base64 - strip data URI prefix if present\nlet imageData = body.image;\nlet mimeType = 'image/jpeg';\n\nif (imageData.startsWith('data:')) {\n  const parts = imageData.match(/^data:([^;]+);base64,(.+)$/);\n  if (parts) {\n    mimeType = parts[1];\n    imageData = parts[2];\n  }\n}\n\n// Remove any whitespace/newlines from base64\nimageData = imageData.replace(/\\s/g, '');\n\n// Validate base64 length (reject files > 10MB)\nconst sizeBytes = (imageData.length * 3) / 4;\nif (sizeBytes > 10 * 1024 * 1024) {\n  throw new Error('Image too large. Maximum 10MB.');\n}\n\nconst pose = body.pose || 'front';\nconst background = body.background || 'white';\nconst isRegenerate = body.regenerate === true;\nconst previousAnalysis = body.previousAnalysis || null;\n\nreturn [{\n  json: {\n    image: imageData,\n    mimeType: mimeType,\n    pose: pose,\n    background: background,\n    isRegenerate: isRegenerate,\n    previousAnalysis: previousAnalysis\n  }\n}];"
+      },
+      "id": "prepare",
+      "name": "Prepare Image",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={{ $env.GEMINI_API_KEY }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={\n  \"contents\": [{\n    \"parts\": [\n      {\n        \"inline_data\": {\n          \"mime_type\": \"{{ $json.mimeType }}\",\n          \"data\": \"{{ $json.image }}\"\n        }\n      },\n      {\n        \"text\": \"You are a high-precision fashion garment analysis AI. Analyze this garment image with PIXEL-LEVEL accuracy. Extract every detail as if you are a master fashion designer reverse-engineering this garment.\\n\\nReturn ONLY a JSON object (no markdown, no code fences) with this EXACT structure:\\n{\\n  \\\"for\\\": \\\"women | men | kids | unisex\\\",\\n  \\\"type\\\": \\\"exact garment type (e.g., midi wrap dress, slim-fit polo shirt, wide-leg pleated trousers)\\\",\\n  \\\"fabric\\\": {\\n    \\\"primary\\\": \\\"exact fabric (e.g., cotton poplin, stretch denim, silk charmeuse)\\\",\\n    \\\"behavior\\\": \\\"how it drapes/moves (e.g., stiff structured, fluid flowing, lightweight airy)\\\",\\n    \\\"weight\\\": \\\"light | medium | heavy\\\",\\n    \\\"texture\\\": \\\"matte | shiny | satin | ribbed | rough | smooth | brushed\\\"\\n  },\\n  \\\"color\\\": {\\n    \\\"primary\\\": \\\"exact color with shade (e.g., deep burgundy, soft blush pink, charcoal grey)\\\",\\n    \\\"secondary\\\": \\\"secondary color if any, else null\\\",\\n    \\\"accent\\\": \\\"accent color if any, else null\\\"\\n  },\\n  \\\"pattern\\\": {\\n    \\\"type\\\": \\\"solid | striped | plaid | floral | geometric | abstract | animal print | paisley | polka dot\\\",\\n    \\\"description\\\": \\\"detailed pattern description including scale, direction, spacing\\\"\\n  },\\n  \\\"construction\\\": {\\n    \\\"fit\\\": \\\"skin-tight | slim | regular | relaxed | oversized\\\",\\n    \\\"silhouette\\\": \\\"A-line | straight | fitted | flared | draped | boxy | peplum\\\",\\n    \\\"neckline\\\": \\\"exact neckline (V-neck, crew, square, scoop, off-shoulder, boat, collar, mandarin)\\\",\\n    \\\"sleeves\\\": \\\"sleeveless | cap | short | 3/4 | long | rolled | puff | bell\\\",\\n    \\\"length\\\": \\\"crop | waist | hip | mid-thigh | knee | midi | ankle | full\\\",\\n    \\\"closure\\\": \\\"buttons | zipper | wrap | pullover | snap | tie | none visible\\\"\\n  },\\n  \\\"details\\\": {\\n    \\\"seams\\\": \\\"visible seam details\\\",\\n    \\\"pockets\\\": \\\"pocket type and placement if any\\\",\\n    \\\"embellishments\\\": \\\"buttons, embroidery, patches, studs, sequins, lace trim, etc.\\\",\\n    \\\"hem\\\": \\\"raw | rolled | clean-finished | ruffled | asymmetric\\\",\\n    \\\"special\\\": \\\"any unique design elements (pleats, darts, panels, cutouts, tiers, layers)\\\"\\n  }\\n}\"\n      }\n    ]\n  }],\n  \"generationConfig\": {\n    \"temperature\": 0.1,\n    \"maxOutputTokens\": 2048,\n    \"responseMimeType\": \"application/json\"\n  }\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "analyze",
+      "name": "Analyze Garment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 340]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// STEP 2: Build Ultra-Detailed Generation Prompt\n// Using Master Prompt Engineering from reference\n// ============================================\nconst analysisResponse = $input.first().json;\nconst settings = $('Prepare Image').first().json;\n\n// Parse garment analysis\nlet g;\ntry {\n  const raw = analysisResponse.candidates[0].content.parts[0].text;\n  const cleaned = raw.replace(/```json|```/g, '').trim();\n  g = JSON.parse(cleaned);\n} catch(e) {\n  // Fallback if parsing fails\n  g = {\n    for: 'women',\n    type: 'garment',\n    fabric: { primary: 'fabric', behavior: 'natural drape', weight: 'medium', texture: 'smooth' },\n    color: { primary: 'as shown in reference', secondary: null, accent: null },\n    pattern: { type: 'solid', description: 'as shown' },\n    construction: { fit: 'regular', silhouette: 'straight', neckline: 'standard', sleeves: 'standard', length: 'standard', closure: 'none visible' },\n    details: { seams: 'standard', pockets: 'none', embellishments: 'none', hem: 'clean-finished', special: 'none' }\n  };\n}\n\n// Normalize fabric object (handle flat vs nested)\nconst fabric = typeof g.fabric === 'object' ? g.fabric : { primary: g.fabric || 'fabric', behavior: g.behavior || 'natural', weight: 'medium', texture: g.texture || 'smooth' };\nconst color = typeof g.color === 'object' ? g.color : { primary: g.color || 'as shown', secondary: null, accent: null };\nconst pattern = typeof g.pattern === 'object' ? g.pattern : { type: g.pattern || 'solid', description: g.pattern || 'solid' };\nconst construction = typeof g.construction === 'object' ? g.construction : { fit: g.fit || 'regular', silhouette: g.silhouette || 'straight', neckline: g.neckline || 'standard', sleeves: g.sleeves || 'standard', length: g.length || 'standard', closure: 'none' };\nconst details = typeof g.details === 'object' ? g.details : { seams: 'standard', pockets: 'none', embellishments: g.details || 'none', hem: 'clean', special: 'none' };\n\n// ---- POSE LIBRARY (Biomechanical precision) ----\nconst poses = {\n  women: {\n    front: 'Standing upright with natural S-curve posture. Weight shifted slightly to left leg creating gentle hip shift. Right foot angled outward 20 degrees. Shoulders relaxed and level. Arms hanging naturally at sides with slight bend at elbows, hands resting at outer thighs with fingers relaxed and slightly curved. Head facing directly toward camera, chin level, neutral confident expression with slight natural smile. Eyes looking directly into camera lens.',\n    back: 'Back facing camera, standing upright with straight spine. Feet shoulder-width apart, weight evenly distributed. Head turned 15 degrees to the right showing quarter profile of face. Arms relaxed at sides. Shoulders back naturally.',\n    side: 'Body turned 45 degrees to the right from camera (three-quarter view). Head turned back toward camera showing full face. Weight on back leg, front leg slightly forward. Left hand resting on hip, right arm relaxed at side. Confident expression with chin slightly raised.'\n  },\n  men: {\n    front: 'Standing upright with squared, confident shoulders. Feet shoulder-width apart, weight evenly distributed. Arms hanging straight down with hands relaxed at sides, fingers loosely curved. Head facing camera directly, chin raised slightly, neutral confident expression. Jaw defined, eyes looking directly into camera.',\n    back: 'Back facing camera, standing straight with squared shoulders. Feet shoulder-width apart. Arms at sides. Head turned slightly showing ear and jawline.',\n    side: 'Body turned 45 degrees to right. Three-quarter profile visible. Chest open, shoulders pulled back naturally. One hand casually in pocket. Head turned toward camera.'\n  },\n  kids: {\n    front: 'Child standing naturally with playful energy. Feet slightly wider than shoulder-width. Arms loose at sides or one hand on hip. Head slightly tilted with a natural genuine smile. Eyes bright and looking at camera.',\n    back: 'Child back to camera, standing naturally with arms hanging at sides. Head turned slightly showing profile.',\n    side: 'Child in three-quarter view, relaxed natural posture, head turned toward camera with a smile.'\n  }\n};\n\n// ---- BACKGROUND LIBRARY ----\nconst backgrounds = {\n  white: 'Clean seamless studio background. Pure soft white (#FFFFFF) paper sweep extending from wall to floor with no visible seam or horizon line. Professional catalog photography setting. Smooth even surface.',\n  grey: 'Clean seamless studio background. Neutral mid-grey paper sweep. Even lighting with no hot spots. Editorial fashion photography feel.',\n  lifestyle: 'Modern minimal interior setting. Light natural oak hardwood floor. Clean white plaster wall with subtle texture. Soft natural daylight streaming from a large window on the left side. Warm atmospheric feel.'\n};\n\nconst gender = (g.for || 'women').toLowerCase();\nconst genderKey = ['women','men','kids'].includes(gender) ? gender : 'women';\nconst poseKey = ['front','back','side'].includes(settings.pose) ? settings.pose : 'front';\nconst bgKey = ['white','grey','lifestyle'].includes(settings.background) ? settings.background : 'white';\n\n// Model description based on gender\nconst modelDesc = {\n  women: 'Professional female fashion model, age 22-28, natural beauty, healthy skin with realistic pores and subtle imperfections, natural body proportions, height approximately 5\\'9\".',\n  men: 'Professional male fashion model, age 25-32, clean-shaven with defined jawline, natural skin texture, athletic build, height approximately 6\\'1\".',\n  kids: 'Child model, age 6-10, natural healthy appearance, genuine expression, proportional build for age.'\n};\n\n// ---- BUILD THE MASTER PROMPT ----\nconst prompt = `Generate a photorealistic professional fashion catalog photograph. This must look IDENTICAL to a real photograph taken by a professional fashion photographer.\n\n[MODEL]\n${modelDesc[genderKey]}\nNatural human anatomy with realistic skin texture, visible pores, subtle skin imperfections. No plastic or airbrushed look.\n\n[POSE — BIOMECHANICAL PRECISION]\n${poses[genderKey][poseKey]}\n\n[GARMENT — PIXEL-LEVEL ACCURACY — THIS IS THE MOST CRITICAL SECTION]\nGarment type: ${g.type}\nFabric: ${fabric.primary}, ${fabric.behavior} behavior, ${fabric.weight} weight, ${fabric.texture} texture/finish.\nPrimary color: ${color.primary}${color.secondary ? '. Secondary color: ' + color.secondary : ''}${color.accent ? '. Accent: ' + color.accent : ''}.\nPattern: ${pattern.type} — ${pattern.description}.\nFit: ${construction.fit}. Silhouette: ${construction.silhouette}.\nNeckline: ${construction.neckline}. Sleeves: ${construction.sleeves}. Length: ${construction.length}.\nClosure: ${construction.closure}.\nSeams: ${details.seams}. Pockets: ${details.pockets}.\nEmbellishments: ${details.embellishments}.\nHem: ${details.hem}.\nSpecial details: ${details.special}.\n\nCRITICAL: The garment must match the reference image EXACTLY. Every stitch, every fold, every pattern element must be preserved. The fabric must behave physically correctly — showing natural wrinkles at bend points, gravity-appropriate draping, compression at tight areas, and natural movement folds.\n\n[BACKGROUND]\n${backgrounds[bgKey]}\n\n[CAMERA & LIGHTING]\nCamera: 85mm portrait lens, f/2.8 aperture, creating shallow depth of field with sharp focus on model.\nFraming: Full-body shot, model centered, slight negative space above head and below feet.\nLighting: Professional three-point studio lighting setup. Key light: large softbox at 45 degrees upper-left. Fill light: reflector at lower-right. Hair light: subtle rim light from behind.\nQuality: 8K resolution, photorealistic, ultra-detailed textures.\nStyle: High-end fashion catalog photography, similar to ZARA, H&M, or NET-A-PORTER product pages.\n\n[ABSOLUTE RULES]\n- The garment MUST match the provided reference image with maximum fidelity\n- Natural human anatomy — no extra fingers, no distorted limbs\n- Realistic fabric physics — the clothing must look like it exists in real 3D space\n- No text, watermarks, or logos unless present on the original garment\n- Professional fashion photography quality`;\n\nreturn [{\n  json: {\n    image: settings.image,\n    mimeType: settings.mimeType,\n    prompt: prompt,\n    garmentAnalysis: g\n  }\n}];"
+      },
+      "id": "build-prompt",
+      "name": "Build Generation Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [860, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key={{ $env.GEMINI_API_KEY }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={\n  \"contents\": [{\n    \"parts\": [\n      {\n        \"inline_data\": {\n          \"mime_type\": \"{{ $json.mimeType }}\",\n          \"data\": \"{{ $json.image }}\"\n        }\n      },\n      {\n        \"text\": {{ JSON.stringify($json.prompt) }}\n      }\n    ]\n  }],\n  \"generationConfig\": {\n    \"responseModalities\": [\"IMAGE\", \"TEXT\"],\n    \"temperature\": 1,\n    \"maxOutputTokens\": 8192\n  }\n}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "generate",
+      "name": "Generate Model Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1080, 340]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// STEP 3: Extract Generated Image from Response\n// ============================================\nconst response = $input.first().json;\nconst garmentAnalysis = $('Build Generation Prompt').first().json.garmentAnalysis;\n\nlet imageBase64 = null;\nlet imageMime = 'image/png';\nlet textResponse = '';\n\ntry {\n  const candidate = response.candidates[0];\n  \n  if (candidate.finishReason === 'SAFETY' || candidate.finishReason === 'BLOCKED') {\n    throw new Error('Image generation was blocked by safety filters. Try a different garment image.');\n  }\n  \n  const parts = candidate.content.parts;\n  \n  for (const part of parts) {\n    if (part.inline_data && part.inline_data.data) {\n      imageBase64 = part.inline_data.data;\n      imageMime = part.inline_data.mime_type || 'image/png';\n    }\n    if (part.text) {\n      textResponse = part.text;\n    }\n  }\n} catch(e) {\n  if (e.message.includes('safety') || e.message.includes('blocked')) {\n    throw e;\n  }\n  \n  // Check for error in response\n  if (response.error) {\n    throw new Error('Gemini API Error: ' + (response.error.message || JSON.stringify(response.error)));\n  }\n  \n  throw new Error('Failed to parse Gemini response: ' + e.message);\n}\n\nif (!imageBase64) {\n  throw new Error('Gemini did not return an image. The model may have refused or encountered an error. Response: ' + textResponse.substring(0, 200));\n}\n\nreturn [{\n  json: {\n    success: true,\n    result_image: imageBase64,\n    result_mime: imageMime,\n    garmentAnalysis: garmentAnalysis\n  }\n}];"
+      },
+      "id": "extract",
+      "name": "Extract Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 340]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              { "name": "Content-Type", "value": "application/json" },
+              { "name": "Access-Control-Allow-Origin", "value": "*" },
+              { "name": "Access-Control-Allow-Methods", "value": "POST, OPTIONS" },
+              { "name": "Access-Control-Allow-Headers", "value": "Content-Type, Accept" }
+            ]
+          }
+        }
+      },
+      "id": "respond",
+      "name": "Return Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1520, 340]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Prepare Image", "type": "main", "index": 0 }]]
+    },
+    "CORS Preflight": {
+      "main": [[{ "node": "CORS Response", "type": "main", "index": 0 }]]
+    },
+    "Prepare Image": {
+      "main": [[{ "node": "Analyze Garment", "type": "main", "index": 0 }]]
+    },
+    "Analyze Garment": {
+      "main": [[{ "node": "Build Generation Prompt", "type": "main", "index": 0 }]]
+    },
+    "Build Generation Prompt": {
+      "main": [[{ "node": "Generate Model Image", "type": "main", "index": 0 }]]
+    },
+    "Generate Model Image": {
+      "main": [[{ "node": "Extract Result", "type": "main", "index": 0 }]]
+    },
+    "Extract Result": {
+      "main": [[{ "node": "Return Result", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "tags": [
+    {
+      "name": "FashionForge",
+      "id": "fashionforge-tag"
+    }
+  ]
+}
