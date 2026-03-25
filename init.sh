@@ -10,90 +10,145 @@ echo "[1/5] Starting n8n server..."
 n8n start &
 N8N_PID=$!
 
-# Wait for n8n to be ready (poll the health endpoint)
+N8N_URL="http://localhost:${N8N_PORT:-5678}"
+
+# Wait for n8n to be ready
 echo "[2/5] Waiting for n8n to be ready..."
 MAX_WAIT=120
 WAITED=0
-until wget -qO- http://localhost:${N8N_PORT:-5678}/healthz > /dev/null 2>&1; do
-  sleep 2
-  WAITED=$((WAITED + 2))
-  if [ $WAITED -ge $MAX_WAIT ]; then
-    echo "WARNING: n8n did not become ready in ${MAX_WAIT}s, checking if it needs setup..."
+while [ $WAITED -lt $MAX_WAIT ]; do
+  HTTP_CODE=$(wget --spider -S "${N8N_URL}" 2>&1 | grep "HTTP/" | tail -1 | awk '{print $2}' || echo "000")
+  if [ "$HTTP_CODE" != "000" ]; then
+    echo "  n8n responded with HTTP $HTTP_CODE"
     break
   fi
+  sleep 3
+  WAITED=$((WAITED + 3))
   echo "  Waiting... (${WAITED}s)"
 done
 
-echo "[3/5] n8n is starting up, waiting for API..."
-sleep 10
+# Extra wait for API to be fully ready
+echo "[3/5] Waiting for API to initialize..."
+sleep 15
 
-N8N_URL="http://localhost:${N8N_PORT:-5678}"
+# Get credentials from environment variables
+N8N_OWNER_EMAIL="${N8N_OWNER_EMAIL:-admin@fashionforge.ai}"
+N8N_OWNER_PASSWORD="${N8N_OWNER_PASSWORD:-FashionForge2026!}"
 
-# Check if owner account exists by trying to get settings
-echo "[3/5] Checking if setup is needed..."
-SETUP_CHECK=$(wget -qO- --header="Content-Type: application/json" "${N8N_URL}/api/v1/owner" 2>&1 || true)
+# Try to login first (account may already exist from a previous session)
+echo "[4/5] Attempting to login..."
+LOGIN_RESPONSE=$(wget -qO- --post-data="{
+  \"email\": \"${N8N_OWNER_EMAIL}\",
+  \"password\": \"${N8N_OWNER_PASSWORD}\"
+}" --header="Content-Type: application/json" \
+   --save-cookies /tmp/n8n-cookies.txt \
+   --keep-session-cookies \
+   "${N8N_URL}/api/v1/login" 2>&1 || echo "LOGIN_FAILED")
 
-if echo "$SETUP_CHECK" | grep -q "not set up"; then
-  echo "[4/5] Creating owner account..."
-  wget -qO- --post-data='{
-    "email": "admin@fashionforge.ai",
-    "firstName": "FashionForge",
-    "lastName": "Admin",
-    "password": "FashionForge2026!"
-  }' --header="Content-Type: application/json" "${N8N_URL}/api/v1/owner/setup" 2>&1 || echo "Owner setup may have failed or already exists"
+if echo "$LOGIN_RESPONSE" | grep -q "LOGIN_FAILED"; then
+  echo "  Login failed. Attempting initial setup..."
+  
+  # Try to set up owner account (works on fresh n8n instances)
+  SETUP_RESPONSE=$(wget -qO- --post-data="{
+    \"email\": \"${N8N_OWNER_EMAIL}\",
+    \"firstName\": \"FashionForge\",
+    \"lastName\": \"Admin\",
+    \"password\": \"${N8N_OWNER_PASSWORD}\"
+  }" --header="Content-Type: application/json" \
+     --save-cookies /tmp/n8n-cookies.txt \
+     --keep-session-cookies \
+     "${N8N_URL}/api/v1/owner/setup" 2>&1 || echo "SETUP_FAILED")
+  
+  if echo "$SETUP_RESPONSE" | grep -q "SETUP_FAILED"; then
+    echo "  ⚠️ Auto-setup failed. Please set up manually at ${WEBHOOK_URL:-the n8n URL}"
+    echo "  Then import the workflow from: /home/node/init-workflow.json"
+    echo "  Keeping n8n running..."
+    wait $N8N_PID
+    exit 0
+  fi
+  
+  echo "  ✅ Owner account created! Logging in..."
   sleep 3
-else
-  echo "[4/5] Owner account already exists, skipping..."
-fi
-
-# Login to get auth cookie
-echo "[4.5/5] Logging in to get API access..."
-LOGIN_RESPONSE=$(wget -qO- --post-data='{
-  "email": "admin@fashionforge.ai",
-  "password": "FashionForge2026!"
-}' --header="Content-Type: application/json" --save-cookies /tmp/n8n-cookies.txt "${N8N_URL}/api/v1/login" 2>&1 || echo "")
-
-# Check if workflow already exists
-echo "[5/5] Checking for existing workflows..."
-WORKFLOWS=$(wget -qO- --load-cookies /tmp/n8n-cookies.txt "${N8N_URL}/api/v1/workflows" 2>&1 || echo "")
-
-if echo "$WORKFLOWS" | grep -q "FashionForge"; then
-  echo "✅ FashionForge workflow already exists!"
-else
-  echo "[5/5] Importing FashionForge workflow..."
-  if [ -f /home/node/init-workflow.json ]; then
-    wget -qO- --post-file=/home/node/init-workflow.json \
-      --header="Content-Type: application/json" \
-      --load-cookies /tmp/n8n-cookies.txt \
-      "${N8N_URL}/api/v1/workflows" 2>&1 || echo "Workflow import may have failed"
-    
-    sleep 2
-    
-    # Try to activate the workflow
-    echo "Activating workflow..."
-    # Get the workflow ID
-    WORKFLOW_LIST=$(wget -qO- --load-cookies /tmp/n8n-cookies.txt "${N8N_URL}/api/v1/workflows" 2>&1 || echo "")
-    WORKFLOW_ID=$(echo "$WORKFLOW_LIST" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-    
-    if [ -n "$WORKFLOW_ID" ]; then
-      wget -qO- --method=PATCH --body-data='{"active": true}' \
-        --header="Content-Type: application/json" \
-        --load-cookies /tmp/n8n-cookies.txt \
-        "${N8N_URL}/api/v1/workflows/${WORKFLOW_ID}" 2>&1 || echo "Activation may have failed"
-      echo "✅ Workflow imported and activated!"
-    else
-      echo "⚠️ Could not find workflow ID to activate. Please activate manually."
-    fi
-  else
-    echo "⚠️ Workflow file not found at /home/node/init-workflow.json"
+  
+  # Login after setup
+  LOGIN_RESPONSE=$(wget -qO- --post-data="{
+    \"email\": \"${N8N_OWNER_EMAIL}\",
+    \"password\": \"${N8N_OWNER_PASSWORD}\"
+  }" --header="Content-Type: application/json" \
+     --save-cookies /tmp/n8n-cookies.txt \
+     --keep-session-cookies \
+     "${N8N_URL}/api/v1/login" 2>&1 || echo "LOGIN_FAILED")
+  
+  if echo "$LOGIN_RESPONSE" | grep -q "LOGIN_FAILED"; then
+    echo "  ⚠️ Login failed after setup. Please configure manually."
+    wait $N8N_PID
+    exit 0
   fi
 fi
+
+echo "  ✅ Logged in successfully!"
+
+# Check if FashionForge workflow already exists
+echo "[5/5] Checking for existing workflows..."
+WORKFLOWS=$(wget -qO- \
+  --load-cookies /tmp/n8n-cookies.txt \
+  "${N8N_URL}/api/v1/workflows" 2>&1 || echo "")
+
+if echo "$WORKFLOWS" | grep -q "FashionForge"; then
+  echo "  ✅ FashionForge workflow already exists!"
+  
+  # Make sure it's activated
+  WORKFLOW_ID=$(echo "$WORKFLOWS" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "")
+  if [ -n "$WORKFLOW_ID" ]; then
+    echo "  Ensuring workflow is active..."
+    wget -qO- --method=PATCH \
+      --body-data='{"active": true}' \
+      --header="Content-Type: application/json" \
+      --load-cookies /tmp/n8n-cookies.txt \
+      "${N8N_URL}/api/v1/workflows/${WORKFLOW_ID}" 2>&1 || echo "  Activation check done"
+  fi
+else
+  echo "  Importing FashionForge workflow..."
+  
+  if [ -f /home/node/init-workflow.json ]; then
+    IMPORT_RESULT=$(wget -qO- \
+      --post-file=/home/node/init-workflow.json \
+      --header="Content-Type: application/json" \
+      --load-cookies /tmp/n8n-cookies.txt \
+      "${N8N_URL}/api/v1/workflows" 2>&1 || echo "IMPORT_FAILED")
+    
+    if echo "$IMPORT_RESULT" | grep -q "IMPORT_FAILED"; then
+      echo "  ⚠️ Auto-import failed. Import manually from n8n UI."
+    else
+      echo "  ✅ Workflow imported!"
+      sleep 2
+      
+      # Get workflow ID and activate
+      WORKFLOW_ID=$(echo "$IMPORT_RESULT" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "")
+      
+      if [ -n "$WORKFLOW_ID" ]; then
+        echo "  Activating workflow (ID: ${WORKFLOW_ID})..."
+        wget -qO- --method=PATCH \
+          --body-data='{"active": true}' \
+          --header="Content-Type: application/json" \
+          --load-cookies /tmp/n8n-cookies.txt \
+          "${N8N_URL}/api/v1/workflows/${WORKFLOW_ID}" 2>&1 || echo "  Activation attempted"
+        echo "  ✅ Workflow activated!"
+      fi
+    fi
+  else
+    echo "  ⚠️ Workflow file not found at /home/node/init-workflow.json"
+  fi
+fi
+
+# Cleanup
+rm -f /tmp/n8n-cookies.txt
 
 echo ""
 echo "========================================="
 echo " FashionForge AI is READY!"
-echo " Webhook: /webhook/fashionforge"
+echo " Webhook: ${WEBHOOK_URL:-http://localhost:5678}/webhook/fashionforge"
 echo "========================================="
 
-# Bring n8n back to foreground
+# Keep n8n running in foreground
 wait $N8N_PID
